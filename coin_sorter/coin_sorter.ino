@@ -12,10 +12,10 @@
 
 // Pin Definitions
 #define LED_PIN           7
-#define PENNY_SENSOR_PIN  A2
-#define NICKEL_SENSOR_PIN A1
-#define DIME_SENSOR_PIN   A3
 #define QUARTER_SENSOR_PIN A0
+#define NICKEL_SENSOR_PIN A1
+#define PENNY_SENSOR_PIN  A2
+#define DIME_SENSOR_PIN   A3
 #define RESET_BUTTON_PIN  6
 #define ADD_DOLLAR_PIN    2  // Button to add $1.00
 #define SUBTRACT_DOLLAR_PIN 3  // Button to subtract $1.00
@@ -43,15 +43,17 @@
 #define DEBUG_MODE        1  // Set to 1 to enable debug features
 #define FIREWORK_INTERVAL 1000  // Firework every $10.00 (1000 cents)
 #define DEBOUNCE_DELAY    10  // Milliseconds for button/coin debouncing
-#define DISPLAY_DELAY     25  // Milliseconds between display updates
-#define COIN_THRESHOLD    640 // Analog threshold for coin detection
+#define DISPLAY_DELAY     25  // Milliseconds between display updates (legacy; not used for delay())
+#define COIN_THRESHOLD    900 // Analog threshold for coin detection
+#define COIN_HYSTERESIS   20  // Hysteresis to avoid chatter around threshold
+#define DISPLAY_REFRESH_MS 100 // How often to refresh steady display when idle
 
 // Motor Configuration
 #define PULSE_ON_TIME     100  // Milliseconds motor stays on
 #define PULSE_OFF_TIME    100  // Milliseconds motor stays off
-#define FORWARD_PULSES    4    // Number of forward pulses per sequence
+#define FORWARD_PULSES    3    // Number of forward pulses per sequence
 #define BACKWARD_PULSES   1    // Number of backward pulses per sequence
-#define TOTAL_SEQUENCES   2    // Number of complete sequences to run
+#define TOTAL_SEQUENCES   3    // Number of complete sequences to run
 
 // EEPROM Configuration
 #define EEPROM_TOTAL_ADDRESS 0  // Address to store total amount
@@ -78,11 +80,18 @@ bool motorRunning = false;
 bool motorDirection = true; // true = forward, false = backward
 unsigned long motorStartTime = 0;
 bool lastMotorButtonState = HIGH;
+unsigned long lastMotorButtonTime = 0;
 unsigned long lastPulseTime = 0;
 bool pulseState = false; // true = motor on, false = motor off
 int pulseCount = 0;
 int sequenceCount = 0; // Which sequence we're in (0 = first, 1 = second, etc.)
 int pulsesInCurrentSequence = 0; // Pulses completed in current sequence
+bool delayedSavePending = false; // Track if we need to save after motor delay
+unsigned long motorStopTime = 0; // When the motor stopped
+
+// Display state
+long lastDisplayedAmount = -1;
+unsigned long lastDisplayUpdate = 0;
 
 // Button variables
 bool lastAddButtonState = HIGH;
@@ -137,9 +146,9 @@ void setup() {
   analogWrite(MOTOR_ENA_PIN, 255); // Full speed for pulsing
   
   // Test motor briefly on startup
-  digitalWrite(MOTOR_FORWARD_PIN, HIGH);
-  delay(100);
-  digitalWrite(MOTOR_FORWARD_PIN, LOW);
+  // digitalWrite(MOTOR_FORWARD_PIN, HIGH);
+  // delay(100);
+  // digitalWrite(MOTOR_FORWARD_PIN, LOW);
   
   #if DEBUG_MODE
     // Initialize Serial for debug output
@@ -154,6 +163,22 @@ void setup() {
 
   // Load saved total from EEPROM
   loadTotalFromEEPROM();
+  
+  // Initialize sensor states to prevent false triggers on startup
+  for (int i = 0; i < 4; i++) {
+    int currentValue = analogRead(SENSOR_PINS[i]);
+    lastSensorStates[i] = (currentValue <= COIN_THRESHOLD);
+    lastSensorTimes[i] = millis();
+    #if DEBUG_MODE
+      Serial.print("Sensor ");
+      Serial.print(i);
+      Serial.print(" initial value: ");
+      Serial.print(currentValue);
+      Serial.print(" (state: ");
+      Serial.print(lastSensorStates[i] ? "coin detected" : "no coin");
+      Serial.println(")");
+    #endif
+  }
   
   // Display initial amount
   updateDisplay(totalAmount, strip.Color(0, 255, 0));
@@ -177,14 +202,28 @@ void loop() {
   // Check motor button
   checkMotorButton();
 
+  // Check if delayed save is due
+  if (delayedSavePending && (millis() - motorStopTime) >= 5000) {
+    saveTotalToEEPROM();
+    delayedSavePending = false;
+    #if DEBUG_MODE
+      Serial.println("Delayed save to EEPROM completed");
+    #endif
+  }
+
   // Handle animation or normal display
   if (animationPlaying) {
     updateAnimation();
   } else {
-    updateDisplay(totalAmount, strip.Color(0, 255, 0));
+    unsigned long now = millis();
+    // Only refresh the display when amount changed or periodic refresh
+    if (totalAmount != lastDisplayedAmount || (now - lastDisplayUpdate) >= DISPLAY_REFRESH_MS) {
+      updateDisplay(totalAmount, strip.Color(0, 255, 0));
+      lastDisplayedAmount = totalAmount;
+      lastDisplayUpdate = now;
+    }
   }
-  
-  delay(DISPLAY_DELAY);
+  // No blocking delay; keep loop fast to avoid missing short sensor events
 }
 
 // Detect which coin was inserted
@@ -194,6 +233,7 @@ int detectCoin() {
   for (int i = 0; i < 4; i++) {
     int currentValue = analogRead(SENSOR_PINS[i]);
     bool coinDetected = (currentValue <= COIN_THRESHOLD);
+    bool coinReleased = (currentValue >= (COIN_THRESHOLD + COIN_HYSTERESIS));
     
     if (coinDetected && !lastSensorStates[i] && 
         (currentTime - lastSensorTimes[i]) > DEBOUNCE_DELAY) {
@@ -210,7 +250,7 @@ int detectCoin() {
       return COIN_VALUES[i];
     }
     
-    if (!coinDetected && lastSensorStates[i]) {
+    if (coinReleased && lastSensorStates[i]) {
       lastSensorStates[i] = false;
     }
   }
@@ -388,10 +428,11 @@ void checkMotorButton() {
   
   // Check for button press with debouncing
   if (currentButtonState == LOW && lastMotorButtonState == HIGH && 
-      (currentTime - motorStartTime) > DEBOUNCE_DELAY) {
+      (currentTime - lastMotorButtonTime) > DEBOUNCE_DELAY) {
     
     if (!motorRunning) {
       startMotor();
+      lastMotorButtonTime = currentTime;
       #if DEBUG_MODE
         // Debug: Flash display to show button was detected
         updateDisplay(totalAmount, strip.Color(255, 0, 255)); // Purple flash
@@ -416,6 +457,8 @@ void startMotor() {
   pulseCount = 0; // Reset pulse counter
   sequenceCount = 0; // Reset sequence counter
   pulsesInCurrentSequence = 0; // Reset sequence pulse counter
+  // Cancel any pending delayed save from a previous stop
+  delayedSavePending = false;
   
   // Always start with forward direction
   motorDirection = true;
@@ -424,15 +467,15 @@ void startMotor() {
   digitalWrite(MOTOR_FORWARD_PIN, HIGH);
   digitalWrite(MOTOR_BACKWARD_PIN, LOW);
   
-  #if DEBUG_MODE
-    Serial.print("Motor: Starting ");
-    Serial.print(TOTAL_SEQUENCES);
-    Serial.print(" sequences (");
-    Serial.print(FORWARD_PULSES);
-    Serial.print(" forward, ");
-    Serial.print(BACKWARD_PULSES);
-    Serial.println(" backward each)");
-  #endif
+  // #if DEBUG_MODE
+  //   Serial.print("Motor: Starting ");
+  //   Serial.print(TOTAL_SEQUENCES);
+  //   Serial.print(" sequences (");
+  //   Serial.print(FORWARD_PULSES);
+  //   Serial.print(" forward, ");
+  //   Serial.print(BACKWARD_PULSES);
+  //   Serial.println(" backward each)");
+  // #endif
 }
 
 void stopMotor() {
@@ -444,8 +487,13 @@ void stopMotor() {
   sequenceCount = 0;
   pulsesInCurrentSequence = 0;
   
-  // Save to EEPROM
-  saveTotalToEEPROM();
+  // Set up delayed save (5 seconds from now)
+  delayedSavePending = true;
+  motorStopTime = millis();
+  
+  #if DEBUG_MODE
+    Serial.println("Motor stopped - will save to EEPROM in 5 seconds");
+  #endif
 }
 
 void updateMotorPulse(unsigned long currentTime) {

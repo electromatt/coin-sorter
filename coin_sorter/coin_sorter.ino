@@ -41,6 +41,7 @@
 
 // Configuration
 #define DEBUG_MODE        1  // Set to 1 to enable debug features
+#define MOTOR_DEBUG       0  // Set to 1 to enable motor-specific debug logs
 #define FIREWORK_INTERVAL 1000  // Firework every $10.00 (1000 cents)
 #define DEBOUNCE_DELAY    10  // Milliseconds for button/coin debouncing
 #define DISPLAY_DELAY     25  // Milliseconds between display updates (legacy; not used for delay())
@@ -433,7 +434,7 @@ void checkMotorButton() {
     if (!motorRunning) {
       startMotor();
       lastMotorButtonTime = currentTime;
-      #if DEBUG_MODE
+      #if MOTOR_DEBUG
         // Debug: Flash display to show button was detected
         updateDisplay(totalAmount, strip.Color(255, 0, 255)); // Purple flash
         Serial.println("Motor button pressed");
@@ -467,15 +468,15 @@ void startMotor() {
   digitalWrite(MOTOR_FORWARD_PIN, HIGH);
   digitalWrite(MOTOR_BACKWARD_PIN, LOW);
   
-  // #if DEBUG_MODE
-  //   Serial.print("Motor: Starting ");
-  //   Serial.print(TOTAL_SEQUENCES);
-  //   Serial.print(" sequences (");
-  //   Serial.print(FORWARD_PULSES);
-  //   Serial.print(" forward, ");
-  //   Serial.print(BACKWARD_PULSES);
-  //   Serial.println(" backward each)");
-  // #endif
+  #if MOTOR_DEBUG
+    Serial.print("Motor: Starting ");
+    Serial.print(TOTAL_SEQUENCES);
+    Serial.print(" sequences (");
+    Serial.print(FORWARD_PULSES);
+    Serial.print(" forward, ");
+    Serial.print(BACKWARD_PULSES);
+    Serial.println(" backward each)");
+  #endif
 }
 
 void stopMotor() {
@@ -491,7 +492,7 @@ void stopMotor() {
   delayedSavePending = true;
   motorStopTime = millis();
   
-  #if DEBUG_MODE
+  #if MOTOR_DEBUG
     Serial.println("Motor stopped - will save to EEPROM in 5 seconds");
   #endif
 }
@@ -506,7 +507,7 @@ void updateMotorPulse(unsigned long currentTime) {
       pulseState = false;
       lastPulseTime = currentTime;
       
-      #if DEBUG_MODE
+      #if MOTOR_DEBUG
         Serial.println("Motor: OFF");
       #endif
     }
@@ -520,7 +521,7 @@ void updateMotorPulse(unsigned long currentTime) {
       if (pulsesInCurrentSequence >= FORWARD_PULSES && motorDirection) {
         // Switch to backward direction
         motorDirection = false;
-        #if DEBUG_MODE
+        #if MOTOR_DEBUG
           Serial.println("Motor: Switching to BACKWARD");
         #endif
       }
@@ -531,7 +532,7 @@ void updateMotorPulse(unsigned long currentTime) {
         pulsesInCurrentSequence = 0;
         motorDirection = true; // Reset to forward for next sequence
         
-        #if DEBUG_MODE
+        #if MOTOR_DEBUG
           Serial.print("Motor: Completed sequence ");
           Serial.print(sequenceCount);
           Serial.print("/");
@@ -559,7 +560,7 @@ void updateMotorPulse(unsigned long currentTime) {
       pulseState = true;
       lastPulseTime = currentTime;
       
-      #if DEBUG_MODE
+      #if MOTOR_DEBUG
         Serial.print("Motor: ON (Pulse ");
         Serial.print(pulseCount);
         Serial.print(", Sequence ");

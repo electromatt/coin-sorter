@@ -45,16 +45,19 @@
 #define FIREWORK_INTERVAL 1000  // Firework every $10.00 (1000 cents)
 #define DEBOUNCE_DELAY    10  // Milliseconds for button/coin debouncing
 #define DISPLAY_DELAY     25  // Milliseconds between display updates (legacy; not used for delay())
-#define COIN_THRESHOLD    900 // Analog threshold for coin detection
-#define COIN_HYSTERESIS   20  // Hysteresis to avoid chatter around threshold
+#define COIN_HYSTERESIS   70  // Hysteresis to avoid chatter around threshold
+#define COIN_MARGIN       80  // Margin above baseline to detect a coin
 #define DISPLAY_REFRESH_MS 100 // How often to refresh steady display when idle
 
 // Motor Configuration
-#define PULSE_ON_TIME     100  // Milliseconds motor stays on
-#define PULSE_OFF_TIME    100  // Milliseconds motor stays off
-#define FORWARD_PULSES    3    // Number of forward pulses per sequence
-#define BACKWARD_PULSES   1    // Number of backward pulses per sequence
-#define TOTAL_SEQUENCES   3    // Number of complete sequences to run
+#define PULSE_ON_TIME     20  // Milliseconds motor stays on
+#define PULSE_OFF_TIME    60  // Milliseconds motor stays off
+#define FORWARD_PULSES    5    // Number of forward pulses per sequence
+#define BACKWARD_PULSES   2    // Number of backward pulses per sequence
+#define TOTAL_SEQUENCES   10    // Number of complete sequences to run
+// Motor PWM speed (0-255). Lower values slow the motor to help coins settle
+#define MOTOR_SPEED_FORWARD 255
+#define MOTOR_SPEED_BACKWARD 160
 
 // EEPROM Configuration
 #define EEPROM_TOTAL_ADDRESS 0  // Address to store total amount
@@ -121,8 +124,21 @@ const bool DIGIT_PATTERNS[10][5][3] = {
 const bool DECIMAL_PATTERN[5][1] = {{0}, {0}, {0}, {0}, {1}};
 
 // Sensor configuration
+// Order is {PENNY(A2), NICKEL(A1), DIME(A3), QUARTER(A0)}
 const int SENSOR_PINS[4] = {PENNY_SENSOR_PIN, NICKEL_SENSOR_PIN, DIME_SENSOR_PIN, QUARTER_SENSOR_PIN};
 const int COIN_VALUES[4] = {PENNY_VALUE, NICKEL_VALUE, DIME_VALUE, QUARTER_VALUE};
+// Baselines captured by user for A0..A3 were {760, 570, 650, 690} (untriggered)
+// Remapped to our sensor order (PENNY=A2, NICKEL=A1, DIME=A3, QUARTER=A0):
+const int SENSOR_BASELINES[4] = {650, 570, 690, 760};
+
+// Helper to read a more stable analog value
+int readAnalogAveraged(int pin, int samples = 5) {
+  long sum = 0;
+  for (int s = 0; s < samples; s++) {
+    sum += analogRead(pin);
+  }
+  return (int)(sum / samples);
+}
 
 void setup() {
   #if defined(__AVR_ATtiny85__) && (F_CPU == 16000000)
@@ -144,7 +160,7 @@ void setup() {
   pinMode(MOTOR_ENA_PIN, OUTPUT);
   digitalWrite(MOTOR_FORWARD_PIN, LOW);
   digitalWrite(MOTOR_BACKWARD_PIN, LOW);
-  analogWrite(MOTOR_ENA_PIN, 255); // Full speed for pulsing
+  analogWrite(MOTOR_ENA_PIN, 0); // Ensure stopped at boot
   
   // Test motor briefly on startup
   // digitalWrite(MOTOR_FORWARD_PIN, HIGH);
@@ -167,15 +183,18 @@ void setup() {
   
   // Initialize sensor states to prevent false triggers on startup
   for (int i = 0; i < 4; i++) {
-    int currentValue = analogRead(SENSOR_PINS[i]);
-    lastSensorStates[i] = (currentValue <= COIN_THRESHOLD);
+    int currentValue = readAnalogAveraged(SENSOR_PINS[i]);
+    int thresholdHigh = SENSOR_BASELINES[i] + COIN_MARGIN;
+    lastSensorStates[i] = (currentValue >= thresholdHigh); // coin triggers higher value
     lastSensorTimes[i] = millis();
     #if DEBUG_MODE
       Serial.print("Sensor ");
       Serial.print(i);
       Serial.print(" initial value: ");
       Serial.print(currentValue);
-      Serial.print(" (state: ");
+      Serial.print(" (high thr: ");
+      Serial.print(thresholdHigh);
+      Serial.print(", state: ");
       Serial.print(lastSensorStates[i] ? "coin detected" : "no coin");
       Serial.println(")");
     #endif
@@ -204,7 +223,7 @@ void loop() {
   checkMotorButton();
 
   // Check if delayed save is due
-  if (delayedSavePending && (millis() - motorStopTime) >= 5000) {
+  if (delayedSavePending && (millis() - motorStopTime) >= 1000) {
     saveTotalToEEPROM();
     delayedSavePending = false;
     #if DEBUG_MODE
@@ -232,9 +251,11 @@ int detectCoin() {
   unsigned long currentTime = millis();
   
   for (int i = 0; i < 4; i++) {
-    int currentValue = analogRead(SENSOR_PINS[i]);
-    bool coinDetected = (currentValue <= COIN_THRESHOLD);
-    bool coinReleased = (currentValue >= (COIN_THRESHOLD + COIN_HYSTERESIS));
+    int currentValue = readAnalogAveraged(SENSOR_PINS[i]);
+    int thresholdHigh = SENSOR_BASELINES[i] + COIN_MARGIN;
+    int thresholdLow  = thresholdHigh - COIN_HYSTERESIS;
+    bool coinDetected = (currentValue >= thresholdHigh);
+    bool coinReleased = (currentValue <= thresholdLow);
     
     if (coinDetected && !lastSensorStates[i] && 
         (currentTime - lastSensorTimes[i]) > DEBOUNCE_DELAY) {
@@ -245,6 +266,8 @@ int detectCoin() {
         Serial.print(i);
         Serial.print(" (Value: ");
         Serial.print(currentValue);
+        Serial.print(", thrH: ");
+        Serial.print(thresholdHigh);
         Serial.print(") - Coin value: ");
         Serial.println(COIN_VALUES[i]);
       #endif
@@ -467,6 +490,7 @@ void startMotor() {
   // Set direction pins for forward
   digitalWrite(MOTOR_FORWARD_PIN, HIGH);
   digitalWrite(MOTOR_BACKWARD_PIN, LOW);
+  analogWrite(MOTOR_ENA_PIN, MOTOR_SPEED_FORWARD);
   
   #if MOTOR_DEBUG
     Serial.print("Motor: Starting ");
@@ -483,6 +507,7 @@ void stopMotor() {
   motorRunning = false;
   digitalWrite(MOTOR_FORWARD_PIN, LOW);
   digitalWrite(MOTOR_BACKWARD_PIN, LOW);
+  analogWrite(MOTOR_ENA_PIN, 0);
   pulseState = false;
   pulseCount = 0;
   sequenceCount = 0;
@@ -501,9 +526,10 @@ void updateMotorPulse(unsigned long currentTime) {
   if (pulseState) {
     // Motor is currently on, check if it should turn off
     if ((currentTime - lastPulseTime) >= PULSE_ON_TIME) {
-      // Turn motor OFF by setting both pins LOW
+      // Turn motor OFF by setting both pins LOW and ENA PWM to 0
       digitalWrite(MOTOR_FORWARD_PIN, LOW);
       digitalWrite(MOTOR_BACKWARD_PIN, LOW);
+      analogWrite(MOTOR_ENA_PIN, 0);
       pulseState = false;
       lastPulseTime = currentTime;
       
@@ -548,13 +574,15 @@ void updateMotorPulse(unsigned long currentTime) {
       
       // Turn motor ON in current direction
       if (motorDirection) {
-        // Forward: Pin 9 HIGH, Pin 10 LOW
+        // Forward: Pin 9 HIGH, Pin 10 LOW, set PWM speed
         digitalWrite(MOTOR_FORWARD_PIN, HIGH);
         digitalWrite(MOTOR_BACKWARD_PIN, LOW);
+        analogWrite(MOTOR_ENA_PIN, MOTOR_SPEED_FORWARD);
       } else {
-        // Backward: Pin 9 LOW, Pin 10 HIGH
+        // Backward: Pin 9 LOW, Pin 10 HIGH, set PWM speed
         digitalWrite(MOTOR_FORWARD_PIN, LOW);
         digitalWrite(MOTOR_BACKWARD_PIN, HIGH);
+        analogWrite(MOTOR_ENA_PIN, MOTOR_SPEED_BACKWARD);
       }
       
       pulseState = true;

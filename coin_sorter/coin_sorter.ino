@@ -48,6 +48,8 @@
 #define COIN_HYSTERESIS   70  // Hysteresis to avoid chatter around threshold
 #define COIN_MARGIN       80  // Margin above baseline to detect a coin
 #define DISPLAY_REFRESH_MS 100 // How often to refresh steady display when idle
+// Autosave configuration
+#define SAVE_INACTIVITY_MS 1000 // Save to EEPROM after this much inactivity
 
 // Motor Configuration
 #define PULSE_ON_TIME     20  // Milliseconds motor stays on
@@ -90,8 +92,9 @@ bool pulseState = false; // true = motor on, false = motor off
 int pulseCount = 0;
 int sequenceCount = 0; // Which sequence we're in (0 = first, 1 = second, etc.)
 int pulsesInCurrentSequence = 0; // Pulses completed in current sequence
-bool delayedSavePending = false; // Track if we need to save after motor delay
-unsigned long motorStopTime = 0; // When the motor stopped
+// Autosave state
+bool hasUnsavedTotalChanges = false;
+unsigned long lastTotalChangeMs = 0;
 
 // Display state
 long lastDisplayedAmount = -1;
@@ -223,11 +226,11 @@ void loop() {
   checkMotorButton();
 
   // Check if delayed save is due
-  if (delayedSavePending && (millis() - motorStopTime) >= 1000) {
+  if (hasUnsavedTotalChanges && !motorRunning && (millis() - lastTotalChangeMs) >= SAVE_INACTIVITY_MS) {
     saveTotalToEEPROM();
-    delayedSavePending = false;
+    hasUnsavedTotalChanges = false;
     #if DEBUG_MODE
-      Serial.println("Delayed save to EEPROM completed");
+      Serial.println("Autosave to EEPROM completed");
     #endif
   }
 
@@ -286,6 +289,8 @@ int detectCoin() {
 void addCoin(int value) {
   long previousAmount = totalAmount;
   totalAmount += value;
+  hasUnsavedTotalChanges = true;
+  lastTotalChangeMs = millis();
   
   // Flash display (brief) - non-blocking
   updateDisplay(totalAmount, strip.Color(255, 255, 0));
@@ -481,8 +486,6 @@ void startMotor() {
   pulseCount = 0; // Reset pulse counter
   sequenceCount = 0; // Reset sequence counter
   pulsesInCurrentSequence = 0; // Reset sequence pulse counter
-  // Cancel any pending delayed save from a previous stop
-  delayedSavePending = false;
   
   // Always start with forward direction
   motorDirection = true;
@@ -512,13 +515,9 @@ void stopMotor() {
   pulseCount = 0;
   sequenceCount = 0;
   pulsesInCurrentSequence = 0;
-  
-  // Set up delayed save (5 seconds from now)
-  delayedSavePending = true;
-  motorStopTime = millis();
-  
+  // No immediate save; autosave in loop after inactivity
   #if MOTOR_DEBUG
-    Serial.println("Motor stopped - will save to EEPROM in 5 seconds");
+    Serial.println("Motor stopped - autosave pending");
   #endif
 }
 
@@ -633,13 +632,14 @@ void checkDollarButtons() {
 void addDollar() {
   long previousAmount = totalAmount;
   totalAmount += 100; // Add $1.00 (100 cents)
+  hasUnsavedTotalChanges = true;
+  lastTotalChangeMs = millis();
   
   #if DEBUG_MODE
     Serial.print("Added $1.00 - New total: $");
     Serial.println(totalAmount / 100.0, 2);
   #endif
   
-  saveTotalToEEPROM();
   // Flash display to show adjustment - non-blocking
   updateDisplay(totalAmount, strip.Color(0, 255, 255)); // Cyan flash
      
@@ -655,13 +655,14 @@ void addDollar() {
 void subtractDollar() {
   if (totalAmount >= 100) { // Prevent negative amounts
     totalAmount -= 100; // Subtract $1.00 (100 cents)
+    hasUnsavedTotalChanges = true;
+    lastTotalChangeMs = millis();
     
     #if DEBUG_MODE
       Serial.print("Subtracted $1.00 - New total: $");
       Serial.println(totalAmount / 100.0, 2);
     #endif
     
-    saveTotalToEEPROM();
     // Flash display to show adjustment - non-blocking
     updateDisplay(totalAmount, strip.Color(255, 165, 0)); // Orange flash
   } else {

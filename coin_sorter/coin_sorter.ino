@@ -43,7 +43,8 @@
 #define DEBUG_MODE        1  // Set to 1 to enable debug features
 #define MOTOR_DEBUG       0  // Set to 1 to enable motor-specific debug logs
 #define FIREWORK_INTERVAL 1000  // Firework every $10.00 (1000 cents)
-#define FIREWORK_FRAME_INTERVAL_MS 90 // Delay between animation frames (higher = slower)
+#define FIREWORK_FRAME_INTERVAL_MS 50
+ // Delay between animation frames (higher = slower)
 #define DEBOUNCE_DELAY    10  // Milliseconds for button/coin debouncing
 #define DISPLAY_DELAY     25  // Milliseconds between display updates (legacy; not used for delay())
 #define COIN_HYSTERESIS   70  // Hysteresis to avoid chatter around threshold
@@ -184,7 +185,7 @@ void setup() {
   strip.setBrightness(50);
 
   // Load saved total from EEPROM
-  //loadTotalFromEEPROM();
+  loadTotalFromEEPROM();
   
   // Initialize sensor states to prevent false triggers on startup
   for (int i = 0; i < 4; i++) {

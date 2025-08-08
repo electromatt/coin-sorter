@@ -43,6 +43,7 @@
 #define DEBUG_MODE        1  // Set to 1 to enable debug features
 #define MOTOR_DEBUG       0  // Set to 1 to enable motor-specific debug logs
 #define FIREWORK_INTERVAL 1000  // Firework every $10.00 (1000 cents)
+#define FIREWORK_FRAME_INTERVAL_MS 90 // Delay between animation frames (higher = slower)
 #define DEBOUNCE_DELAY    10  // Milliseconds for button/coin debouncing
 #define DISPLAY_DELAY     25  // Milliseconds between display updates (legacy; not used for delay())
 #define COIN_HYSTERESIS   70  // Hysteresis to avoid chatter around threshold
@@ -52,11 +53,11 @@
 #define SAVE_INACTIVITY_MS 1000 // Save to EEPROM after this much inactivity
 
 // Motor Configuration
-#define PULSE_ON_TIME     20  // Milliseconds motor stays on
-#define PULSE_OFF_TIME    60  // Milliseconds motor stays off
+#define PULSE_ON_TIME     40  // Milliseconds motor stays on
+#define PULSE_OFF_TIME    50  // Milliseconds motor stays off
 #define FORWARD_PULSES    5    // Number of forward pulses per sequence
 #define BACKWARD_PULSES   2    // Number of backward pulses per sequence
-#define TOTAL_SEQUENCES   10    // Number of complete sequences to run
+#define TOTAL_SEQUENCES   20    // Number of complete sequences to run
 // Motor PWM speed (0-255). Lower values slow the motor to help coins settle
 #define MOTOR_SPEED_FORWARD 255
 #define MOTOR_SPEED_BACKWARD 160
@@ -66,7 +67,7 @@
 #define EEPROM_MAGIC_NUMBER  0xAA55  // Magic number to verify data is valid
 
 // Global Variables
-long totalAmount = 0;
+long totalAmount = 21000;
 unsigned long lastSensorTimes[4] = {0, 0, 0, 0};
 bool lastSensorStates[4] = {false, false, false, false}; // false = no coin detected
 long lastFireworkMilestone = 0;
@@ -74,6 +75,7 @@ long lastFireworkMilestone = 0;
 // Animation state variables
 bool animationPlaying = false;
 unsigned long animationStartTime = 0;
+unsigned long lastAnimationFrameMs = 0;
 int animationStep = 0;
 int fireworkBurst = 0;
 int fireworkCenterX = 0;
@@ -182,7 +184,7 @@ void setup() {
   strip.setBrightness(50);
 
   // Load saved total from EEPROM
-  loadTotalFromEEPROM();
+  //loadTotalFromEEPROM();
   
   // Initialize sensor states to prevent false triggers on startup
   for (int i = 0; i < 4; i++) {
@@ -389,6 +391,7 @@ void setMatrixPixel(int x, int y, uint32_t color) {
 void startFireworkAnimation() {
   animationPlaying = true;
   animationStartTime = millis();
+  lastAnimationFrameMs = animationStartTime;
   animationStep = 0;
   fireworkBurst = 0;
   flashStep = 0;
@@ -403,6 +406,11 @@ void startFireworkAnimation() {
 }
 
 void updateAnimation() {
+  unsigned long now = millis();
+  if ((now - lastAnimationFrameMs) < FIREWORK_FRAME_INTERVAL_MS) {
+    return; // not time for next frame yet
+  }
+  lastAnimationFrameMs = now;
   // Handle different animation phases
   if (fireworkBurst < 3) {
     // Firework burst phase
